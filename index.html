@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>マンカラ ボードゲーム</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  .pit { transition: transform 0.15s, box-shadow 0.15s; }
+  .pit:hover:not(.disabled) { transform: scale(1.05); box-shadow: 0 0 12px rgba(0,0,0,0.3); }
+  .pit.active { box-shadow: 0 0 16px rgba(255,220,0,0.8); }
+  .stone { display:inline-block; width:12px; height:12px; border-radius:50%; background:radial-gradient(circle at 35% 35%, #f0e68c, #8b7355); margin:1px; }
+  .stone.blue { background:radial-gradient(circle at 35% 35%, #87ceeb, #1e4080); }
+  @keyframes sow { 0%{transform:scale(1)} 50%{transform:scale(1.3)} 100%{transform:scale(1)} }
+</style>
+</head>
+<body class="bg-amber-900 min-h-screen flex flex-col items-center justify-center p-4">
+<div class="max-w-2xl w-full">
+  <h1 class="text-3xl font-bold text-center text-amber-300 mb-2">マンカラ（オワレ）</h1>
+  <p class="text-center text-amber-400 text-sm mb-6">Mancala / Oware — アフリカ伝統のボードゲーム</p>
+
+  <!-- Stats -->
+  <div class="flex justify-center gap-4 mb-4">
+    <div class="bg-amber-800 rounded-xl px-4 py-2 text-center">
+      <div class="text-xs text-amber-400">プレイヤー勝利</div>
+      <div id="stat-win" class="text-xl font-bold text-green-400">0</div>
+    </div>
+    <div class="bg-amber-800 rounded-xl px-4 py-2 text-center">
+      <div class="text-xs text-amber-400">引き分け</div>
+      <div id="stat-draw" class="text-xl font-bold text-yellow-400">0</div>
+    </div>
+    <div class="bg-amber-800 rounded-xl px-4 py-2 text-center">
+      <div class="text-xs text-amber-400">コンピュータ勝利</div>
+      <div id="stat-lose" class="text-xl font-bold text-red-400">0</div>
+    </div>
+  </div>
+
+  <!-- ゲームボード -->
+  <div class="bg-amber-700 rounded-3xl p-6 shadow-2xl">
+    <!-- コンピュータ側ストア -->
+    <div class="flex justify-between items-center mb-4">
+      <div id="store-pc" class="bg-amber-900 rounded-2xl w-16 h-32 flex flex-col items-center justify-center text-white font-bold shadow-inner" aria-label="コンピュータストア">
+        <div class="text-xs text-amber-400 mb-1">COM</div>
+        <div id="store-pc-count" class="text-2xl">0</div>
+      </div>
+      <!-- PC pits (right to left: 11-6) -->
+      <div class="flex gap-2" id="pc-pits"></div>
+      <div class="w-16"></div>
+    </div>
+
+    <!-- ターン表示 -->
+    <div class="text-center py-2">
+      <span id="turn-display" class="text-amber-200 font-semibold text-sm bg-amber-800/50 px-4 py-1 rounded-full"></span>
+    </div>
+
+    <!-- Player side -->
+    <div class="flex justify-between items-center mt-4">
+      <div class="w-16"></div>
+      <!-- Player pits (left to right: 0-5) -->
+      <div class="flex gap-2" id="player-pits"></div>
+      <div id="store-player" class="bg-amber-900 rounded-2xl w-16 h-32 flex flex-col items-center justify-center text-white font-bold shadow-inner" aria-label="プレイヤーストア">
+        <div class="text-xs text-amber-400 mb-1">YOU</div>
+        <div id="store-player-count" class="text-2xl">0</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Controls -->
+  <div class="flex gap-3 justify-center mt-6">
+    <button onclick="newGame()" class="bg-amber-500 hover:bg-amber-400 text-white px-6 py-2 rounded-xl font-bold transition">新ゲーム</button>
+  </div>
+
+  <!-- Message -->
+  <div id="message" class="text-center text-amber-200 mt-4 text-lg font-semibold min-h-8"></div>
+
+  <!-- Rules -->
+  <div class="bg-amber-800/50 rounded-xl p-4 mt-6 text-amber-200 text-xs">
+    <div class="font-bold text-amber-300 mb-2">ルール</div>
+    <ul class="list-disc list-inside space-y-1">
+      <li>各穴に石が4個。自分の穴（下段）をクリックして石を蒔く</li>
+      <li>石は反時計回りに1つずつ配布（相手のストアはスキップ）</li>
+      <li>最後の石が自分のストアに入ったら、もう1回ターンを得る</li>
+      <li>最後の石が空の自分の穴に入り、対面に石があれば両方獲得</li>
+      <li>一方のプレイヤーの穴が全て空になったらゲーム終了</li>
+      <li>石を多く集めたプレイヤーの勝ち</li>
+    </ul>
+  </div>
+</div>
+
+<script>
+// Mancala (Oware/Kalah hybrid)
+// Indices: 0-5 = player pits, 6 = player store, 7-12 = PC pits (7=leftmost for PC), 13 = PC store
+// PC side display: reversed (12 to 7)
+const PLAYER_PITS = [0,1,2,3,4,5];
+const PC_PITS = [7,8,9,10,11,12];
+const PLAYER_STORE = 6;
+const PC_STORE = 13;
+const TOTAL = 14;
+
+let board, currentTurn, gameEnded, stats, aiThinking;
+
+function initStats() {
+  const s = localStorage.getItem('mancala-stats');
+  stats = s ? JSON.parse(s) : { win:0, draw:0, lose:0 };
+}
+
+function saveStats() {
+  localStorage.setItem('mancala-stats', JSON.stringify(stats));
+}
+
+function newGame() {
+  board = new Array(TOTAL).fill(4);
+  board[PLAYER_STORE] = 0;
+  board[PC_STORE] = 0;
+  currentTurn = 'player';
+  gameEnded = false;
+  aiThinking = false;
+  setMessage('あなたのターン（下段の穴を選択）');
+  renderBoard();
+}
+
+function renderBoard() {
+  // player pits (0-5 left to right)
+  const ppDiv = document.getElementById('player-pits');
+  ppDiv.innerHTML = '';
+  for (let i = 0; i < 6; i++) {
+    const pit = createPit(i, board[i], 'player');
+    ppDiv.appendChild(pit);
+  }
+  // pc pits (12 to 7, left to right from PC perspective = right to left from player)
+  const pcDiv = document.getElementById('pc-pits');
+  pcDiv.innerHTML = '';
+  for (let i = 12; i >= 7; i--) {
+    const pit = createPit(i, board[i], 'pc');
+    pcDiv.appendChild(pit);
+  }
+  document.getElementById('store-player-count').textContent = board[PLAYER_STORE];
+  document.getElementById('store-pc-count').textContent = board[PC_STORE];
+  document.getElementById('stat-win').textContent = stats.win;
+  document.getElementById('stat-draw').textContent = stats.draw;
+  document.getElementById('stat-lose').textContent = stats.lose;
+}
+
+function createPit(index, count, owner) {
+  const div = document.createElement('div');
+  const isActive = !gameEnded && !aiThinking && currentTurn === 'player' && owner === 'player' && count > 0;
+  div.className = `pit w-14 h-14 rounded-full flex flex-col items-center justify-center cursor-pointer bg-amber-900 shadow-inner select-none ${isActive ? 'active' : 'disabled opacity-70'} ${owner === 'pc' ? 'cursor-default' : ''}`;
+  div.setAttribute('aria-label', `${owner === 'player' ? 'プレイヤー' : 'PC'}穴${index} 石${count}個`);
+  div.setAttribute('role', 'button');
+  // stones visual
+  const stoneContainer = document.createElement('div');
+  stoneContainer.className = 'flex flex-wrap justify-center';
+  const showCount = Math.min(count, 9);
+  for (let s = 0; s < showCount; s++) {
+    const stone = document.createElement('span');
+    stone.className = 'stone' + (owner === 'pc' ? ' blue' : '');
+    stoneContainer.appendChild(stone);
+  }
+  if (count > 9) {
+    const more = document.createElement('span');
+    more.className = 'text-xs text-amber-300';
+    more.textContent = '+' + (count - 9);
+    stoneContainer.appendChild(more);
+  }
+  const numDiv = document.createElement('div');
+  numDiv.className = 'text-sm font-bold text-amber-200 mt-1';
+  numDiv.textContent = count;
+  div.appendChild(stoneContainer);
+  div.appendChild(numDiv);
+  if (isActive) {
+    div.onclick = () => playerMove(index);
+    div.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') playerMove(index); };
+    div.tabIndex = 0;
+  }
+  return div;
+}
+
+function playerMove(pitIdx) {
+  if (currentTurn !== 'player' || gameEnded || aiThinking) return;
+  if (!PLAYER_PITS.includes(pitIdx) || board[pitIdx] === 0) return;
+  const bonusTurn = sow(pitIdx, 'player');
+  if (checkEnd()) return;
+  if (bonusTurn) {
+    setMessage('ボーナスターン！もう一度どうぞ');
+    renderBoard();
+  } else {
+    currentTurn = 'pc';
+    setMessage('コンピュータが考え中...');
+    renderBoard();
+    aiThinking = true;
+    setTimeout(() => {
+      pcMove();
+      aiThinking = false;
+    }, 800);
+  }
+}
+
+function pcMove() {
+  if (gameEnded) return;
+  let best = -1, bestScore = -Infinity;
+  for (let i of PC_PITS) {
+    if (board[i] > 0) {
+      const sim = [...board];
+      const bonus = sowSim(sim, i, 'pc');
+      const sc = sim[PC_STORE] + (bonus ? 2 : 0);
+      if (sc > bestScore) { bestScore = sc; best = i; }
+    }
+  }
+  if (best === -1) { checkEnd(); return; }
+  const bonusTurn = sow(best, 'pc');
+  if (checkEnd()) return;
+  if (bonusTurn) {
+    setMessage('コンピュータがボーナスターン！');
+    renderBoard();
+    setTimeout(() => { pcMove(); }, 800);
+  } else {
+    currentTurn = 'player';
+    setMessage('あなたのターン（下段の穴を選択）');
+    renderBoard();
+  }
+}
+
+function sow(pitIdx, owner) {
+  let stones = board[pitIdx];
+  board[pitIdx] = 0;
+  let cur = pitIdx;
+  while (stones > 0) {
+    cur = (cur + 1) % TOTAL;
+    // skip opponent's store
+    if (owner === 'player' && cur === PC_STORE) cur = (cur + 1) % TOTAL;
+    if (owner === 'pc' && cur === PLAYER_STORE) cur = (cur + 1) % TOTAL;
+    board[cur]++;
+    stones--;
+  }
+  // Bonus turn: last stone lands in own store
+  if (owner === 'player' && cur === PLAYER_STORE) return true;
+  if (owner === 'pc' && cur === PC_STORE) return true;
+  // Capture: last stone in empty own pit, opposite has stones
+  if (owner === 'player' && PLAYER_PITS.includes(cur) && board[cur] === 1) {
+    const opp = 12 - cur; // mirror: pit 0 <-> 12, 1<->11...
+    if (board[opp] > 0) {
+      board[PLAYER_STORE] += board[cur] + board[opp];
+      board[cur] = 0; board[opp] = 0;
+    }
+  }
+  if (owner === 'pc' && PC_PITS.includes(cur) && board[cur] === 1) {
+    const opp = 12 - cur;
+    if (board[opp] > 0) {
+      board[PC_STORE] += board[cur] + board[opp];
+      board[cur] = 0; board[opp] = 0;
+    }
+  }
+  return false;
+}
+
+function sowSim(sim, pitIdx, owner) {
+  let stones = sim[pitIdx];
+  sim[pitIdx] = 0;
+  let cur = pitIdx;
+  while (stones > 0) {
+    cur = (cur + 1) % TOTAL;
+    if (owner === 'player' && cur === PC_STORE) cur = (cur + 1) % TOTAL;
+    if (owner === 'pc' && cur === PLAYER_STORE) cur = (cur + 1) % TOTAL;
+    sim[cur]++;
+    stones--;
+  }
+  if (owner === 'player' && cur === PLAYER_STORE) return true;
+  if (owner === 'pc' && cur === PC_STORE) return true;
+  return false;
+}
+
+function checkEnd() {
+  const playerEmpty = PLAYER_PITS.every(i => board[i] === 0);
+  const pcEmpty = PC_PITS.every(i => board[i] === 0);
+  if (!playerEmpty && !pcEmpty) return false;
+  // collect remaining
+  PLAYER_PITS.forEach(i => { board[PLAYER_STORE] += board[i]; board[i] = 0; });
+  PC_PITS.forEach(i => { board[PC_STORE] += board[i]; board[i] = 0; });
+  gameEnded = true;
+  renderBoard();
+  const p = board[PLAYER_STORE], c = board[PC_STORE];
+  let msg = '';
+  if (p > c) { msg = `あなたの勝ち！ (${p} vs ${c})`; stats.win++; }
+  else if (c > p) { msg = `コンピュータの勝ち (${p} vs ${c})`; stats.lose++; }
+  else { msg = `引き分け！ (${p} vs ${c})`; stats.draw++; }
+  setMessage(msg);
+  saveStats();
+  return true;
+}
+
+function setMessage(msg) {
+  document.getElementById('message').textContent = msg;
+  document.getElementById('turn-display').textContent =
+    currentTurn === 'player' ? '🟡 あなたのターン' : '🔵 コンピュータのターン';
+}
+
+initStats();
+newGame();
+</script>
+</body>
+</html>
